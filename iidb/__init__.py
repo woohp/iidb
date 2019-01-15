@@ -3,6 +3,8 @@ import numpy as np
 import zstd
 from typing import Any, Union, Iterable, Tuple
 
+__all__ = ['IIDB']
+
 
 class IIDB:
     """Images Interchange Database"""
@@ -10,6 +12,19 @@ class IIDB:
         self.env = lmdb.open(path, map_size=1024**4, subdir=False, lock=False, readonly=readonly)
         self.compressor = zstd.ZstdCompressor()
         self.decompressor = zstd.ZstdDecompressor()
+
+    def close(self):
+        self.env.close()
+
+    def _compress(self, value):
+        height, width = value.shape[:2]
+        if len(value.shape) == 2:
+            channels = 1
+        else:
+            channels = value.shape[2]
+        header = np.array([0, height, width, channels], dtype=np.uint16)
+        compressed_blob = self.compressor.compress(value.tobytes())
+        return header.tobytes() + compressed_blob
 
     def get(self, key: Union[int, str]):
         with self.env.begin(write=False) as txn:
@@ -26,18 +41,10 @@ class IIDB:
             return out.reshape((height, width, channels))
 
     def put(self, key: Union[int, str], value):
-        height, width = value.shape[:2]
-        if len(value.shape) == 2:
-            channels = 1
-        else:
-            channels = value.shape[2]
-        header = np.array([0, height, width, channels], dtype=np.uint16)
-        compressed_blob = self.compressor.compress(value.tobytes())
-
         with self.env.begin(write=True) as txn:
-            txn.put(str(key).encode('utf-8'), header.tobytes() + compressed_blob, dupdata=False)
+            txn.put(str(key).encode('utf-8'), self._compress(value), dupdata=False)
 
     def putmulti(self, items: Iterable[Tuple[Union[str, int], Any]]):
-        items_processed = ((str(key).encode('utf-8'), value) for key, value in items)
+        items_processed = ((str(key).encode('utf-8'), self._compress(value)) for key, value in items)
         with self.env.begin(write=True) as txn:
             return txn.cursor().putmulti(items_processed, dupdata=False)
