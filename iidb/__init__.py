@@ -40,9 +40,13 @@ class IIDB:
         else:
             return out.reshape((height, width, channels))
 
+    __getitem__ = get
+
     def put(self, key: Union[int, str], value):
         with self.env.begin(write=True) as txn:
             txn.put(str(key).encode('utf-8'), self._compress(value), dupdata=False)
+
+    __setitem__ = put
 
     def putmulti(self, items: Iterable[Tuple[Union[str, int], Any]]):
         items_processed = ((str(key).encode('utf-8'), self._compress(value)) for key, value in items)
