@@ -56,3 +56,9 @@ class IIDBTestCase(unittest.TestCase):
         data = self._make_array()
         db.put(234, data)
         np.testing.assert_array_equal(db.get(234), data)
+
+    def test_get_dimension(self):
+        db = IIDB('test.mdb', readonly=False)
+        data = self._make_array((4, 5))
+        db[123] = data
+        self.assertEqual(db.get_image_dimension(123), (4, 5))
