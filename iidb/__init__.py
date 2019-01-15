@@ -48,13 +48,17 @@ class IIDB:
 
     __setitem__ = put
 
+    def __contains__(self, key: Union[int, str]) -> bool:
+        with self.env.begin(write=False, buffers=True) as txn:
+            return txn.get(str(key).encode('utf-8')) is not None
+
     def putmulti(self, items: Iterable[Tuple[Union[str, int], Any]]):
         items_processed = ((str(key).encode('utf-8'), self._compress(value)) for key, value in items)
         with self.env.begin(write=True) as txn:
             return txn.cursor().putmulti(items_processed, dupdata=False)
 
     def get_image_dimension(self, key: Union[int, str]) -> Tuple[int, int]:
-        with self.env.begin(buffers=True) as txn:
+        with self.env.begin(write=False, buffers=True) as txn:
             buf = txn.get(str(key).encode('utf-8'))
             header = np.frombuffer(buf[:8], dtype=np.uint16)
             height = int(header[1])

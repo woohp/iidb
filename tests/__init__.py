@@ -20,6 +20,8 @@ class IIDBTestCase(unittest.TestCase):
         db = IIDB('test.mdb', readonly=False)
         data = self._make_array()
         db.put(123, data)
+        self.assertTrue(123 in db)
+        self.assertFalse(234 in db)
         db.close()
 
         db2 = IIDB('test.mdb', readonly=True)
