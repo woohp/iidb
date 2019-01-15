@@ -19,7 +19,11 @@ class IIDB:
         height = header[1]
         width = header[2]
         channels = header[3]
-        return np.frombuffer(self.decompressor.decompress(value[8:]), dtype=np.uint8).reshape((height, width, channels))
+        out = np.frombuffer(self.decompressor.decompress(value[8:]), dtype=np.uint8)
+        if channels == 1:
+            return out.reshape((height, width))
+        else:
+            return out.reshape((height, width, channels))
 
     def put(self, key: Union[int, str], value):
         height, width = value.shape[:2]
@@ -34,6 +38,6 @@ class IIDB:
             txn.put(str(key).encode('utf-8'), header.tobytes() + compressed_blob, dupdata=False)
 
     def putmulti(self, items: Iterable[Tuple[Union[str, int], Any]]):
-        items = ((str(key).encode('utf-8'), value) for key, value in items)
+        items_processed = ((str(key).encode('utf-8'), value) for key, value in items)
         with self.env.begin(write=True) as txn:
-            return txn.cursor().putmulti(items, dupdata=False)
+            return txn.cursor().putmulti(items_processed, dupdata=False)
