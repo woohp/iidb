@@ -9,19 +9,33 @@ __all__ = ['IIDB']
 
 class IIDB:
     """Images Interchange Database"""
+
+    compressor = zstd.ZstdCompressor()
+    decompressor = zstd.ZstdDecompressor()
+    header_packer = struct.Struct('<HHHH')
+
     def __init__(self, path: str, readonly: bool = True) -> None:
         self.path = path
         self.readonly = readonly
         self.env = lmdb.open(path, map_size=1024**4, subdir=False, lock=False, readonly=readonly)
-        self.compressor = zstd.ZstdCompressor()
-        self.decompressor = zstd.ZstdDecompressor()
-        self.header_packer = struct.Struct('<HHHH')
 
     def close(self):
-        self.env.close()
+        if self.env is not None:
+            self.env.close()
+            self.env = None
 
     def __repr__(self) -> str:
         return f'IIDB(path={self.path!r}, readonly={self.readonly})'
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        self.close()
+
+    @property
+    def closed(self):
+        return self.env is None
 
     def _compress(self, value) -> bytes:
         height, width = value.shape[:2]
