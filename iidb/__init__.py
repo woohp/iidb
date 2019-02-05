@@ -23,7 +23,7 @@ class IIDB:
     def __repr__(self) -> str:
         return f'IIDB(path={self.path!r}, readonly={self.readonly})'
 
-    def _compress(self, value):
+    def _compress(self, value) -> bytes:
         height, width = value.shape[:2]
         if len(value.shape) == 2:
             channels = 1
@@ -48,6 +48,25 @@ class IIDB:
             return out.reshape((height, width, channels))
 
     __getitem__ = get
+
+    def getmulti(self, keys: Iterable[Union[int, str]]):
+        output = []
+
+        with self.env.begin(write=False) as txn:
+            for key in keys:
+                value = txn.get(str(key).encode('utf-8'))
+
+                header = self.header_packer.unpack(value[:8])
+                height = header[1]
+                width = header[2]
+                channels = header[3]
+                out = np.frombuffer(self.decompressor.decompress(value[8:]), dtype=np.uint8)
+                if channels == 1:
+                    output.append(out.reshape((height, width)))
+                else:
+                    output.append(out.reshape((height, width, channels)))
+
+        return output
 
     def put(self, key: Union[int, str], value):
         with self.env.begin(write=True) as txn:
