@@ -48,14 +48,14 @@ class IIDB:
         return header_blob + compressed_blob
 
     def get(self, key: Union[int, str]):
-        with self.env.begin(write=False) as txn:
-            value = txn.get(str(key).encode('utf-8'))
+        with self.env.begin(write=False, buffers=True) as txn:
+            buf = txn.get(str(key).encode('utf-8'))
 
-        header = self.header_packer.unpack(value[:8])
-        height = header[1]
-        width = header[2]
-        channels = header[3]
-        out = np.frombuffer(self.decompressor.decompress(value[8:]), dtype=np.uint8)
+            header = self.header_packer.unpack(buf[:8])
+            height = header[1]
+            width = header[2]
+            channels = header[3]
+            out = np.frombuffer(self.decompressor.decompress(buf[8:]), dtype=np.uint8)
         if channels == 1:
             return out.reshape((height, width))
         else:
@@ -66,15 +66,15 @@ class IIDB:
     def getmulti(self, keys: Iterable[Union[int, str]]):
         output = []
 
-        with self.env.begin(write=False) as txn:
+        with self.env.begin(write=False, buffers=True) as txn:
             for key in keys:
-                value = txn.get(str(key).encode('utf-8'))
+                buf = txn.get(str(key).encode('utf-8'))
 
-                header = self.header_packer.unpack(value[:8])
+                header = self.header_packer.unpack(buf[:8])
                 height = header[1]
                 width = header[2]
                 channels = header[3]
-                out = np.frombuffer(self.decompressor.decompress(value[8:]), dtype=np.uint8)
+                out = np.frombuffer(self.decompressor.decompress(buf[8:]), dtype=np.uint8)
                 if channels == 1:
                     output.append(out.reshape((height, width)))
                 else:
