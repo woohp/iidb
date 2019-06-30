@@ -1,5 +1,7 @@
 #include <cstddef>
 #include <lmdb.h>
+#include <lz4.h>
+#include <lz4frame.h>
 #include <omp.h>
 #include <optional>
 #include <string_view>
@@ -60,7 +62,7 @@ private:
     txn(MDB_env* const env, bool writeable)
     {
         if (::mdb_txn_begin(env, nullptr, writeable ? 0 : MDB_RDONLY, &this->_handle) != MDB_SUCCESS)
-            throw std::runtime_error{"mdb: failed to begin transaction"};
+            throw std::runtime_error { "mdb: failed to begin transaction" };
     }
 
 public:
@@ -99,7 +101,7 @@ public:
     {
         MDB_dbi dbi_handle = 0;
         if (::mdb_dbi_open(this->_handle, nullptr, 0, &dbi_handle) != MDB_SUCCESS)
-            throw std::runtime_error{"mdb: failed to open dbi"};
+            throw std::runtime_error { "mdb: failed to open dbi" };
 
         MDB_val key_;
         blob<T> out;
@@ -110,7 +112,7 @@ public:
         if (rc == MDB_NOTFOUND)
             return std::nullopt;
         else if (rc != MDB_SUCCESS)
-            throw std::runtime_error{"mdb: failed to get value"};
+            throw std::runtime_error { "mdb: failed to get value" };
 
         return out;
     }
@@ -132,11 +134,11 @@ public:
     {
         auto rc = ::mdb_env_create(&this->_handle);
         if (rc != MDB_SUCCESS)
-            throw std::runtime_error{"mdb: failed to create environment"};
+            throw std::runtime_error { "mdb: failed to create environment" };
 
         rc = ::mdb_env_open(this->_handle, path.data(), static_cast<unsigned int>(flags), 0644);
         if (rc != MDB_SUCCESS)
-            throw std::runtime_error{"mdb: failed to open environment"};
+            throw std::runtime_error { "mdb: failed to open environment" };
     }
 
     lmdb(const lmdb& other) = delete;
@@ -158,7 +160,7 @@ public:
     lmdb& set_mapsize(std::size_t size)
     {
         if (::mdb_env_set_mapsize(this->_handle, size) != MDB_SUCCESS)
-            throw std::runtime_error{"mdb: failed to set map_size"};
+            throw std::runtime_error { "mdb: failed to set map_size" };
         return *this;
     }
 
@@ -186,7 +188,7 @@ struct image_dim
 class iidb : protected lmdb
 {
 public:
-    iidb(std::string_view path, bool writeable = true)
+    iidb(std::string_view path, bool writeable = false)
         : lmdb(path, openflags::nosubdir | openflags::nolock | (writeable ? openflags::none : openflags::rdonly))
     {
         this->set_mapsize(1024L * 1024 * 1024 * 1024);  // 1 Tebibyte
@@ -203,7 +205,7 @@ public:
         auto height = header[1];
         auto width = header[2];
         auto channels = header[3];
-        return image_dim{ height, width, channels };
+        return image_dim { height, width, channels };
     }
 
     std::optional<image_dim> get_image_dimension(std::int64_t key)
@@ -212,7 +214,7 @@ public:
         return this->get_image_dimension(key_);
     }
 
-    std::optional<image> get(std::string_view key, std::byte* const out = nullptr)
+    std::optional<image> get(std::string_view key, std::byte* out = nullptr)
     {
         auto txn = this->begin();
         auto value = txn.get(key);
@@ -220,21 +222,29 @@ public:
             return std::nullopt;
 
         const std::uint16_t* header = reinterpret_cast<const uint16_t*>(value->data());
+        auto mode = header[0];
         auto height = header[1];
         auto width = header[2];
         auto channels = header[3];
         auto total_size = width * height * channels;  // in bytes
         std::vector<std::byte> uncompressed;
 
-        if (out)
-            ZSTD_decompress(out, total_size, value->data() + 8, value->size() - 8);
-        else
+        if (!out)
         {
             uncompressed.resize(total_size);
-            ZSTD_decompress(uncompressed.data(), total_size, value->data() + 8, value->size() - 8);
+            out = uncompressed.data();
         }
 
-        return image{ std::move(uncompressed), height, width, channels };
+        if (mode == 0)
+            ZSTD_decompress(out, total_size, value->data() + 8, value->size() - 8);
+        else if (mode == 1)
+            LZ4_decompress_safe(
+                reinterpret_cast<const char*>(value->data() + 8),
+                reinterpret_cast<char*>(out),
+                value->size() - 8,
+                total_size);
+
+        return image { std::move(uncompressed), height, width, channels };
     }
 
     std::optional<image> get(std::int64_t key, std::byte* const out = nullptr)
@@ -255,7 +265,9 @@ public:
         for (unsigned int i = 0; i < num_threads; i++)
             transactions.emplace_back(this->begin());
 
-        #pragma omp parallel for
+        std::uint16_t mode = 0;
+
+#pragma omp parallel for
         for (size_t i = 0; i < keys.size(); i++)
         {
             auto& thread_txn = transactions[omp_get_thread_num()];
@@ -263,19 +275,20 @@ public:
             auto key_ = std::to_string(key);
             auto value = thread_txn.get(key_);
             if (!value)
-                throw std::out_of_range{ "key not found: " + key_ };
+                throw std::out_of_range { "key not found: " + key_ };
             blobs[i] = *value;
 
             const std::uint16_t* header = reinterpret_cast<const uint16_t*>(value->data());
             image_dims[i].height = header[1];
             image_dims[i].width = header[2];
             image_dims[i].channels = header[3];
+            if (i == 0)
+                mode = header[0];
         }
 
         // in serial, calculate the destination pointer addresses
         std::vector<std::pair<std::byte*, std::size_t>> dests;
         dests.reserve(keys.size());
-        const auto original = out;
         for (size_t i = 0; i < keys.size(); i++)
         {
             const auto& dim = image_dims[i];
@@ -284,12 +297,21 @@ public:
             out += total_size;
         }
 
-        #pragma omp parallel for
+#pragma omp parallel for
         for (size_t i = 0; i < blobs.size(); i++)
         {
             const auto& blob = blobs[i];
             auto [out_ptr, out_size] = dests[i];
-            ZSTD_decompress(out_ptr, out_size, blob.data() + 8, blob.size() - 8);
+            if (mode == 0)
+                ZSTD_decompress(out_ptr, out_size, blob.data() + 8, blob.size() - 8);
+            else if (mode == 1)
+            {
+                LZ4_decompress_safe(
+                    reinterpret_cast<const char*>(blob.data() + 8),
+                    reinterpret_cast<char*>(out_ptr),
+                    blob.size() - 8,
+                    out_size);
+            }
         }
     }
 };

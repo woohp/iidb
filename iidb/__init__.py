@@ -2,6 +2,7 @@ import lmdb
 import numpy as np
 import struct
 import zstd
+import lz4.block
 from typing import Any, Union, Iterable, Tuple
 
 __all__ = ['IIDB']
@@ -10,14 +11,15 @@ __all__ = ['IIDB']
 class IIDB:
     """Images Interchange Database"""
 
-    compressor = zstd.ZstdCompressor()
-    decompressor = zstd.ZstdDecompressor()
+    zstd_compressor = zstd.ZstdCompressor()
+    zstd_decompressor = zstd.ZstdDecompressor()
     header_packer = struct.Struct('<HHHH')
 
-    def __init__(self, path: str, readonly: bool = True) -> None:
+    def __init__(self, path: str, readonly: bool = True, mode: int = 0) -> None:
         self.path = path
         self.readonly = readonly
         self.env = lmdb.open(path, map_size=1024**4, subdir=False, lock=False, readonly=readonly)
+        self.mode = mode
 
     def close(self):
         if self.env is not None:
@@ -33,6 +35,10 @@ class IIDB:
     def __exit__(self, exc_type, exc_value, exc_traceback):
         self.close()
 
+    def __len__(self) -> int:
+        with self.env.begin() as txn:
+            return txn.stat()['entries']
+
     @property
     def closed(self):
         return self.env is None
@@ -43,23 +49,40 @@ class IIDB:
             channels = 1
         else:
             channels = value.shape[2]
-        header_blob = self.header_packer.pack(0, height, width, channels)
-        compressed_blob = self.compressor.compress(value.tobytes())
+
+        header_blob = self.header_packer.pack(self.mode, height, width, channels)
+        if self.mode == 0:
+            compressed_blob = self.zstd_compressor.compress(value.tobytes())
+        else:
+            compressed_blob = lz4.block.compress(
+                value.tobytes(), mode='high_compression', compression=7, store_size=False
+            )
+
         return header_blob + compressed_blob
 
-    def get(self, key: Union[int, str]):
-        with self.env.begin(write=False, buffers=True) as txn:
-            buf = txn.get(str(key).encode('utf-8'))
+    def _decompress(self, buf: memoryview):
+        header = self.header_packer.unpack(buf[:8])
+        mode = header[0]
+        height = header[1]
+        width = header[2]
+        channels = header[3]
 
-            header = self.header_packer.unpack(buf[:8])
-            height = header[1]
-            width = header[2]
-            channels = header[3]
-            out = np.frombuffer(self.decompressor.decompress(buf[8:]), dtype=np.uint8)
+        # decompress based on the correct mode
+        if mode == 0:
+            decompressed_bytes = self.zstd_decompressor.decompress(buf[8:])
+        else:
+            decompressed_bytes = lz4.block.decompress(buf[8:], height * width * channels)
+        out = np.frombuffer(decompressed_bytes, dtype=np.uint8)
+
         if channels == 1:
             return out.reshape((height, width))
         else:
             return out.reshape((height, width, channels))
+
+    def get(self, key: Union[int, str]):
+        with self.env.begin(write=False, buffers=True) as txn:
+            buf: memoryview = txn.get(str(key).encode('utf-8'))
+            return self._decompress(buf)
 
     __getitem__ = get
 
@@ -68,17 +91,8 @@ class IIDB:
 
         with self.env.begin(write=False, buffers=True) as txn:
             for key in keys:
-                buf = txn.get(str(key).encode('utf-8'))
-
-                header = self.header_packer.unpack(buf[:8])
-                height = header[1]
-                width = header[2]
-                channels = header[3]
-                out = np.frombuffer(self.decompressor.decompress(buf[8:]), dtype=np.uint8)
-                if channels == 1:
-                    output.append(out.reshape((height, width)))
-                else:
-                    output.append(out.reshape((height, width, channels)))
+                buf: memoryview = txn.get(str(key).encode('utf-8'))
+                output.append(self._decompress(buf))
 
         return output
 
