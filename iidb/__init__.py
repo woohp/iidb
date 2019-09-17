@@ -3,9 +3,12 @@ import numpy as np
 import struct
 import zstd
 import lz4.block
-from typing import Any, Union, Iterable, Tuple
+from typing import Iterable, List, Optional, Tuple, Union
 
 __all__ = ['IIDB']
+
+
+KeyType = Union[int, str]
 
 
 class IIDB:
@@ -43,7 +46,7 @@ class IIDB:
     def closed(self):
         return self.env is None
 
-    def _compress(self, value) -> bytes:
+    def _compress(self, value: np.ndarray) -> bytes:
         height, width = value.shape[:2]
         if len(value.shape) == 2:
             channels = 1
@@ -60,7 +63,7 @@ class IIDB:
 
         return header_blob + compressed_blob
 
-    def _decompress(self, buf: memoryview):
+    def _decompress(self, buf: memoryview) -> np.ndarray:
         header = self.header_packer.unpack(buf[:8])
         mode = header[0]
         height = header[1]
@@ -79,41 +82,47 @@ class IIDB:
         else:
             return out.reshape((height, width, channels))
 
-    def get(self, key: Union[int, str]):
+    def get(self, key: KeyType) -> np.ndarray:
         with self.env.begin(write=False, buffers=True) as txn:
-            buf: memoryview = txn.get(str(key).encode('utf-8'))
+            buf: Optional[memoryview] = txn.get(str(key).encode('utf-8'))
+            if buf is None:
+                raise KeyError(key)
             return self._decompress(buf)
 
     __getitem__ = get
 
-    def getmulti(self, keys: Iterable[Union[int, str]]):
+    def getmulti(self, keys: Iterable[KeyType]) -> List[np.ndarray]:
         output = []
 
         with self.env.begin(write=False, buffers=True) as txn:
             for key in keys:
-                buf: memoryview = txn.get(str(key).encode('utf-8'))
+                buf: Optional[memoryview] = txn.get(str(key).encode('utf-8'))
+                if buf is None:
+                    raise KeyError(key)
                 output.append(self._decompress(buf))
 
         return output
 
-    def put(self, key: Union[int, str], value):
+    def put(self, key: KeyType, value: np.ndarray):
         with self.env.begin(write=True) as txn:
             txn.put(str(key).encode('utf-8'), self._compress(value), dupdata=False)
 
     __setitem__ = put
 
-    def __contains__(self, key: Union[int, str]) -> bool:
+    def __contains__(self, key: KeyType) -> bool:
         with self.env.begin(write=False, buffers=True) as txn:
             return txn.get(str(key).encode('utf-8')) is not None
 
-    def putmulti(self, items: Iterable[Tuple[Union[str, int], Any]]):
+    def putmulti(self, items: Iterable[Tuple[KeyType, np.ndarray]]):
         items_processed = ((str(key).encode('utf-8'), self._compress(value)) for key, value in items)
         with self.env.begin(write=True) as txn:
             return txn.cursor().putmulti(items_processed, dupdata=False)
 
-    def get_image_dimension(self, key: Union[int, str]) -> Tuple[int, int]:
+    def get_image_dimension(self, key: KeyType) -> Tuple[int, int]:
         with self.env.begin(write=False, buffers=True) as txn:
-            buf = txn.get(str(key).encode('utf-8'))
+            buf: Optional[memoryview] = txn.get(str(key).encode('utf-8'))
+            if buf is None:
+                raise KeyError(key)
             header = self.header_packer.unpack(buf[:8])
             height = header[1]
             width = header[2]
