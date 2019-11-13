@@ -1,0 +1,31 @@
+#!/usr/bin/env python
+import click
+import lmdb
+
+
+@click.command()
+@click.argument('src', type=click.Path(exists=True), required=True)
+@click.argument('dest', type=click.Path(exists=True), required=True)
+def main(src: str, dest: str):
+    assert src.endswith('.mdb')
+    assert dest.endswith('.mdb')
+
+    print(f'merging "{src}" into "{dest}"')
+    print('press ENTER to continue')
+    input()
+
+    src_env = lmdb.open(src, map_size=1024**4, subdir=False, lock=False, readonly=True)
+    dest_env = lmdb.open(dest, map_size=1024**4, subdir=False, lock=False, readonly=False)
+
+    with src_env.begin() as src_txn, dest_env.begin(write=True) as dest_txn:
+        print('src entries:', src_txn.stat()['entries'])
+        print('dest entries (original):', dest_txn.stat()['entries'])
+        src_cursor = src_txn.cursor()
+        while src_cursor.next():
+            key, value = src_cursor.item()
+            dest_txn.put(key, value)
+        print('dest entries (final):', dest_txn.stat()['entries'])
+
+
+if __name__ == '__main__':
+    main()
