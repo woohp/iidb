@@ -1,3 +1,4 @@
+from functools import partial
 import lmdb
 import numpy as np
 import struct
@@ -22,6 +23,12 @@ class IIDB:
         self.readonly = readonly
         self.env = lmdb.open(path, map_size=1024**4, subdir=False, lock=False, readonly=readonly)
         self.mode = mode
+
+        if mode == 0:
+            self._compress_func = self.zstd_compressor.compress
+        elif mode == 1:
+            import lz4.block
+            self._compress_func = partial(lz4.block.compress, mode='high_compression', compression=7, store_size=False)
 
     def close(self):
         if self.env is not None:
@@ -53,14 +60,7 @@ class IIDB:
             channels = value.shape[2]
 
         header_blob = self.header_packer.pack(self.mode, height, width, channels)
-        if self.mode == 0:
-            compressed_blob = self.zstd_compressor.compress(value.tobytes())
-        elif self.mode == 1:
-            import lz4.block
-            compressed_blob = lz4.block.compress(
-                value.tobytes(), mode='high_compression', compression=7, store_size=False
-            )
-
+        compressed_blob = self._compress_func(value)
         return header_blob + compressed_blob
 
     def _decompress(self, buf: memoryview) -> np.ndarray:
