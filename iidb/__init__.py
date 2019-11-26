@@ -2,7 +2,6 @@ import lmdb
 import numpy as np
 import struct
 import zstd
-import lz4.block
 from typing import Iterable, List, Optional, Tuple, Union
 
 __all__ = ['IIDB']
@@ -56,7 +55,8 @@ class IIDB:
         header_blob = self.header_packer.pack(self.mode, height, width, channels)
         if self.mode == 0:
             compressed_blob = self.zstd_compressor.compress(value.tobytes())
-        else:
+        elif self.mode == 1:
+            import lz4.block
             compressed_blob = lz4.block.compress(
                 value.tobytes(), mode='high_compression', compression=7, store_size=False
             )
@@ -65,15 +65,13 @@ class IIDB:
 
     def _decompress(self, buf: memoryview) -> np.ndarray:
         header = self.header_packer.unpack(buf[:8])
-        mode = header[0]
-        height = header[1]
-        width = header[2]
-        channels = header[3]
+        mode, height, width, channels = header
 
         # decompress based on the correct mode
         if mode == 0:
             decompressed_bytes = self.zstd_decompressor.decompress(buf[8:])
-        else:
+        elif mode == 1:
+            import lz4.block
             decompressed_bytes = lz4.block.decompress(buf[8:], height * width * channels)
         out = np.frombuffer(decompressed_bytes, dtype=np.uint8)
 

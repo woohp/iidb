@@ -7,5 +7,5 @@ setup(
     version='0.1',
     packages=find_packages(exclude=('tests',)),
     scripts=['bin/getimage', 'bin/merge-image-databases'],
-    install_requires=['lmdb', 'zstandard>=0.10.2'],
+    install_requires=['lmdb', 'zstandard>=0.12.0'],
 )
