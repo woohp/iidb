@@ -1,8 +1,8 @@
 #include <cstddef>
+#include <future>
 #include <lmdb.h>
 #include <lz4.h>
-#include <lz4frame.h>
-#include <omp.h>
+#include <math.h>
 #include <optional>
 #include <string_view>
 #include <thread>
@@ -49,7 +49,7 @@ struct blob : MDB_val
 
     std::vector<T> copy() const
     {
-        return std::vector(this->data(), this->data + this->size());
+        return std::vector<T>(this->data(), this->data + this->size());
     }
 };
 
@@ -170,6 +170,40 @@ public:
     }
 };
 
+template <typename F>
+void parallel_for_(const size_t start, const size_t end, size_t grain_size, F f)
+{
+    const auto total = end - start;
+    const auto hardware_concurrency = std::thread::hardware_concurrency();
+    if (total <= grain_size || hardware_concurrency == 1)
+    {
+        f(start, end);
+        return;
+    }
+
+    const auto n_threads = std::min(
+        hardware_concurrency, static_cast<unsigned int>(ceil(static_cast<double>(total) / grain_size)));
+    const auto thread_stride = total / n_threads;
+    auto leftover = total - n_threads * thread_stride;
+
+    std::vector<std::future<void>> futures(n_threads);
+    for (size_t i = 0, thread_start = start; i < n_threads; i++)
+    {
+        auto this_thread_stride = thread_stride;
+        if (leftover > 0)
+        {
+            this_thread_stride++;
+            leftover--;
+        }
+        auto thread_end = std::min(end, thread_start + this_thread_stride);
+        futures[i] = std::async(std::launch::async, f, thread_start, thread_end);
+        thread_start += this_thread_stride;
+    }
+
+    for (const auto& future : futures)
+        future.wait();
+}
+
 struct image
 {
     std::vector<std::byte> data;
@@ -259,32 +293,28 @@ public:
         std::vector<blob<std::byte>> blobs(keys.size());
         std::vector<image_dim> image_dims(keys.size());
 
-        auto num_threads = std::min<unsigned int>(std::thread::hardware_concurrency(), keys.size());
-        std::vector<txn> transactions;
-        transactions.reserve(num_threads);
-        for (unsigned int i = 0; i < num_threads; i++)
-            transactions.emplace_back(this->begin());
-
         std::uint16_t mode = 0;
 
-#pragma omp parallel for
-        for (size_t i = 0; i < keys.size(); i++)
-        {
-            auto& thread_txn = transactions[omp_get_thread_num()];
-            auto key = keys[i];
-            auto key_ = std::to_string(key);
-            auto value = thread_txn.get(key_);
-            if (!value)
-                throw std::out_of_range { "key not found: " + key_ };
-            blobs[i] = *value;
+        parallel_for_(0, keys.size(), 1, [&](size_t start, size_t end) {
+            auto thread_txn = this->begin();
 
-            const std::uint16_t* header = reinterpret_cast<const uint16_t*>(value->data());
-            image_dims[i].height = header[1];
-            image_dims[i].width = header[2];
-            image_dims[i].channels = header[3];
-            if (i == 0)
-                mode = header[0];
-        }
+            for (size_t i = start; i < end; i++)
+            {
+                auto key = keys[i];
+                auto key_ = std::to_string(key);
+                auto value = thread_txn.get(key_);
+                if (!value)
+                    throw std::out_of_range { "key not found: " + key_ };
+                blobs[i] = *value;
+
+                const std::uint16_t* header = reinterpret_cast<const uint16_t*>(value->data());
+                image_dims[i].height = header[1];
+                image_dims[i].width = header[2];
+                image_dims[i].channels = header[3];
+                if (i == 0)
+                    mode = header[0];
+            }
+        });
 
         // in serial, calculate the destination pointer addresses
         std::vector<std::pair<std::byte*, std::size_t>> dests;
@@ -293,26 +323,34 @@ public:
         {
             const auto& dim = image_dims[i];
             std::size_t total_size = chunk_size.value_or(dim.width * dim.height * dim.channels);  // in bytes
-            dests.push_back({ out, total_size });
+            dests.emplace_back(out, total_size);
             out += total_size;
         }
 
-#pragma omp parallel for
-        for (size_t i = 0; i < blobs.size(); i++)
-        {
-            const auto& blob = blobs[i];
-            auto [out_ptr, out_size] = dests[i];
+        parallel_for_(0, blobs.size(), 1, [&](size_t start, size_t end) {
+            ZSTD_DCtx* zstd_dctx = nullptr;
             if (mode == 0)
-                ZSTD_decompress(out_ptr, out_size, blob.data() + 8, blob.size() - 8);
-            else if (mode == 1)
+                zstd_dctx = ZSTD_createDCtx();
+
+            for (size_t i = start; i < end; i++)
             {
-                LZ4_decompress_safe(
-                    reinterpret_cast<const char*>(blob.data() + 8),
-                    reinterpret_cast<char*>(out_ptr),
-                    blob.size() - 8,
-                    out_size);
+                const auto& blob = blobs[i];
+                auto [out_ptr, out_size] = dests[i];
+                if (mode == 0)
+                    ZSTD_decompressDCtx(zstd_dctx, out_ptr, out_size, blob.data() + 8, blob.size() - 8);
+                else if (mode == 1)
+                {
+                    LZ4_decompress_safe(
+                        reinterpret_cast<const char*>(blob.data() + 8),
+                        reinterpret_cast<char*>(out_ptr),
+                        blob.size() - 8,
+                        out_size);
+                }
             }
-        }
+
+            if (zstd_dctx)
+                ZSTD_freeDCtx(zstd_dctx);
+        });
     }
 };
 }
