@@ -1,3 +1,6 @@
 .mypy_cache
 *.egg-info
+.eggs
 __pycache__
+build
+*.so

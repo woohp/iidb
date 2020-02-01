@@ -12,7 +12,7 @@ import iidb
 @click.option('--out', type=click.Path(), default=None)
 @click.argument('id', type=int, required=True)
 def main(id: int, db: str, out: Optional[str]):
-    db = iidb.IIDB(db)
+    db = iidb.open(db)
     image = Image.fromarray(db[id])
 
     if out:

@@ -1,7 +1,7 @@
 #include <cstddef>
 #include <future>
 #include <lmdb.h>
-#include <lz4.h>
+#include <lz4hc.h>
 #include <math.h>
 #include <optional>
 #include <string_view>
@@ -118,6 +118,22 @@ public:
     }
 
     template <typename T = std::byte>
+    void put(std::string_view key, blob<T>& value)
+    {
+        MDB_dbi dbi_handle = 0;
+        if (::mdb_dbi_open(this->_handle, nullptr, 0, &dbi_handle) != MDB_SUCCESS)
+            throw std::runtime_error { "mdb: failed to open dbi" };
+
+        MDB_val key_;
+        key_.mv_data = const_cast<char*>(key.data());
+        key_.mv_size = key.size();
+
+        auto rc = ::mdb_put(this->_handle, dbi_handle, &key_, &value, 0);
+        if (rc != MDB_SUCCESS)
+            throw std::runtime_error { "mdb: failed to get value" };
+    }
+
+    template <typename T = std::byte>
     std::optional<blob<T>> get(std::int64_t key)
     {
         return this->get(std::to_string(key));
@@ -126,7 +142,7 @@ public:
 
 class lmdb
 {
-private:
+protected:
     MDB_env* _handle = nullptr;
 
 public:
@@ -150,11 +166,30 @@ public:
 
     ~lmdb()
     {
+        this->close();
+    }
+
+    bool closed() const
+    {
+        return !static_cast<bool>(this->_handle);
+    }
+
+    void close()
+    {
         if (this->_handle)
         {
             ::mdb_env_close(this->_handle);
             this->_handle = nullptr;
         }
+    }
+
+    size_t size() const
+    {
+        MDB_stat stat;
+        if (::mdb_env_stat(this->_handle, &stat) != MDB_SUCCESS)
+            throw std::runtime_error { "mdb: failed to get env info stat" };
+
+        return stat.ms_entries;
     }
 
     lmdb& set_mapsize(std::size_t size)
@@ -174,15 +209,15 @@ template <typename F>
 void parallel_for_(const size_t start, const size_t end, size_t grain_size, F f)
 {
     const auto total = end - start;
-    const auto hardware_concurrency = std::thread::hardware_concurrency();
+    const auto hardware_concurrency = 4u;
     if (total <= grain_size || hardware_concurrency == 1)
     {
-        f(start, end);
+        f(0, start, end);
         return;
     }
 
-    const auto n_threads = std::min(
-        hardware_concurrency, static_cast<unsigned int>(ceil(static_cast<double>(total) / grain_size)));
+    const auto n_threads
+        = std::min(hardware_concurrency, static_cast<unsigned int>(ceil(static_cast<double>(total) / grain_size)));
     const auto thread_stride = total / n_threads;
     auto leftover = total - n_threads * thread_stride;
 
@@ -196,7 +231,7 @@ void parallel_for_(const size_t start, const size_t end, size_t grain_size, F f)
             leftover--;
         }
         auto thread_end = std::min(end, thread_start + this_thread_stride);
-        futures[i] = std::async(std::launch::async, f, thread_start, thread_end);
+        futures[i] = std::async(std::launch::async, f, i, thread_start, thread_end);
         thread_start += this_thread_stride;
     }
 
@@ -219,7 +254,7 @@ struct image_dim
     std::uint16_t channels;
 };
 
-class iidb : protected lmdb
+class iidb : public lmdb
 {
 public:
     iidb(std::string_view path, bool writeable = false)
@@ -295,7 +330,7 @@ public:
 
         std::uint16_t mode = 0;
 
-        parallel_for_(0, keys.size(), 1, [&](size_t start, size_t end) {
+        parallel_for_(0, keys.size(), 1, [&](size_t, size_t start, size_t end) {
             auto thread_txn = this->begin();
 
             for (size_t i = start; i < end; i++)
@@ -327,7 +362,7 @@ public:
             out += total_size;
         }
 
-        parallel_for_(0, blobs.size(), 1, [&](size_t start, size_t end) {
+        parallel_for_(0, blobs.size(), 1, [&](size_t, size_t start, size_t end) {
             ZSTD_DCtx* zstd_dctx = nullptr;
             if (mode == 0)
                 zstd_dctx = ZSTD_createDCtx();
@@ -353,4 +388,7 @@ public:
         });
     }
 };
+
+static_assert(std::is_move_constructible_v<iidb>);
+
 }

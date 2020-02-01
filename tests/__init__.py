@@ -27,7 +27,7 @@ class IIDBTestCase(unittest.TestCase):
         self.assertTrue(db.closed)
 
         db2 = iidb.open('test.mdb', readonly=True)
-        np.testing.assert_array_equal(db2.get('123'), data)
+        np.testing.assert_array_equal(db2.get(123), data)
 
     def test_basic_put_and_get_lz4(self):
         db = iidb.open('test.mdb', readonly=False, mode=1)
@@ -40,7 +40,7 @@ class IIDBTestCase(unittest.TestCase):
         self.assertTrue(db.closed)
 
         db2 = iidb.open('test.mdb', readonly=True)
-        np.testing.assert_array_equal(db2.get('123'), data)
+        np.testing.assert_array_equal(db2.get(123), data)
 
     def test_channels(self):
         db = iidb.open('test.mdb', readonly=False)
@@ -49,7 +49,7 @@ class IIDBTestCase(unittest.TestCase):
         db.close()
 
         db2 = iidb.open('test.mdb', readonly=True)
-        np.testing.assert_array_equal(db2.get('234'), data)
+        np.testing.assert_array_equal(db2.get(234), data)
 
     def test_put_multiple(self):
         data = [
