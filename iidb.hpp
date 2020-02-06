@@ -4,6 +4,7 @@
 #include <lz4hc.h>
 #include <math.h>
 #include <optional>
+#include <queue>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -205,39 +206,99 @@ public:
     }
 };
 
-template <typename F>
-void parallel_for_(const size_t start, const size_t end, size_t grain_size, F f)
+class thread_pool
 {
-    const auto total = end - start;
-    const auto hardware_concurrency = 4u;
-    if (total <= grain_size || hardware_concurrency == 1)
-    {
-        f(0, start, end);
-        return;
-    }
+private:
+    typedef std::packaged_task<void(size_t)> task_type;
 
-    const auto n_threads
-        = std::min(hardware_concurrency, static_cast<unsigned int>(ceil(static_cast<double>(total) / grain_size)));
-    const auto thread_stride = total / n_threads;
-    auto leftover = total - n_threads * thread_stride;
+    std::vector<std::thread> workers;
+    std::queue<task_type> tasks;
 
-    std::vector<std::future<void>> futures(n_threads);
-    for (size_t i = 0, thread_start = start; i < n_threads; i++)
+    // synchronization
+    std::mutex queue_mutex;
+    std::condition_variable condition;
+    bool stop = false;
+
+public:
+    thread_pool(size_t threads)
     {
-        auto this_thread_stride = thread_stride;
-        if (leftover > 0)
+        for (size_t i = 0; i < threads; i++)
         {
-            this_thread_stride++;
-            leftover--;
+            this->workers.emplace_back([this, i] {
+                for (;;)
+                {
+                    task_type task;
+
+                    {
+                        std::unique_lock<std::mutex> lock(this->queue_mutex);
+                        this->condition.wait(lock, [this] { return this->stop || this->tasks.size() > 0; });
+                        if (this->stop && this->tasks.empty())
+                            return;
+                        task = std::move(this->tasks.front());
+                        this->tasks.pop();
+                    }
+
+                    task(i);
+                }
+            });
         }
-        auto thread_end = std::min(end, thread_start + this_thread_stride);
-        futures[i] = std::async(std::launch::async, f, i, thread_start, thread_end);
-        thread_start += this_thread_stride;
     }
 
-    for (const auto& future : futures)
-        future.wait();
-}
+    ~thread_pool()
+    {
+        {
+            std::unique_lock<std::mutex> lock(this->queue_mutex);
+            this->stop = true;
+        }
+        this->condition.notify_all();
+        for (auto& worker : this->workers)
+            worker.join();
+    }
+
+    size_t num_threads() const
+    {
+        return this->workers.size();
+    }
+
+    template <typename F>
+    std::future<void> enqueue(F&& f)
+    {
+        auto task = task_type { f };
+
+        std::future<void> res = task.get_future();
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+
+            // don't allow enqueueing after stopping the pool
+            if (this->stop)
+                throw std::runtime_error("enqueue on stopped thread_pool");
+
+            this->tasks.push(std::move(task));
+        }
+        this->condition.notify_one();
+
+        return res;
+    }
+
+    template <typename F>
+    void parallel_for(size_t start, size_t end, F&& f)
+    {
+        if (end - start < 2)
+        {
+            for (size_t i = start; i < end; i++)
+                f(i, 0);
+            return;
+        }
+
+        std::vector<std::future<void>> futures;
+        for (size_t i = start; i < end; i++)
+        {
+            futures.push_back(this->enqueue([i, &f](size_t thread_idx) { f(i, thread_idx); }));
+        }
+        for (auto& future : futures)
+            future.wait();
+    }
+};
 
 struct image
 {
@@ -259,8 +320,19 @@ class iidb : public lmdb
 public:
     iidb(std::string_view path, bool writeable = false)
         : lmdb(path, openflags::nosubdir | openflags::nolock | (writeable ? openflags::none : openflags::rdonly))
+        , pool(new thread_pool { std::thread::hardware_concurrency() })
     {
         this->set_mapsize(1024L * 1024 * 1024 * 1024);  // 1 Tebibyte
+    }
+
+    iidb(iidb&&) = default;
+
+    ~iidb()
+    {
+        for (auto ctx : zstd_dcontexts)
+            ZSTD_freeDCtx(ctx);
+        for (auto ctx : zstd_ccontexts)
+            ZSTD_freeCCtx(ctx);
     }
 
     std::optional<image_dim> get_image_dimension(std::string_view key)
@@ -330,26 +402,22 @@ public:
 
         std::uint16_t mode = 0;
 
-        parallel_for_(0, keys.size(), 1, [&](size_t, size_t start, size_t end) {
-            auto thread_txn = this->begin();
+        auto txn = this->begin();
+        for (size_t i = 0; i < keys.size(); i++)
+        {
+            auto key = keys[i];
+            auto key_ = std::to_string(key);
+            auto value = txn.get(key_);
+            if (!value)
+                throw std::out_of_range { "key not found: " + key_ };
+            blobs[i] = *value;
 
-            for (size_t i = start; i < end; i++)
-            {
-                auto key = keys[i];
-                auto key_ = std::to_string(key);
-                auto value = thread_txn.get(key_);
-                if (!value)
-                    throw std::out_of_range { "key not found: " + key_ };
-                blobs[i] = *value;
-
-                const std::uint16_t* header = reinterpret_cast<const uint16_t*>(value->data());
-                image_dims[i].height = header[1];
-                image_dims[i].width = header[2];
-                image_dims[i].channels = header[3];
-                if (i == 0)
-                    mode = header[0];
-            }
-        });
+            auto header = reinterpret_cast<const uint16_t*>(value->data());
+            mode = header[0];
+            image_dims[i].height = header[1];
+            image_dims[i].width = header[2];
+            image_dims[i].channels = header[3];
+        }
 
         // in serial, calculate the destination pointer addresses
         std::vector<std::pair<std::byte*, std::size_t>> dests;
@@ -362,31 +430,45 @@ public:
             out += total_size;
         }
 
-        parallel_for_(0, blobs.size(), 1, [&](size_t, size_t start, size_t end) {
-            ZSTD_DCtx* zstd_dctx = nullptr;
+        // create zstd contexts
+        if (mode == 0)
+            this->_init_zstd_contexts();
+
+        this->pool->parallel_for(0, blobs.size(), [&](size_t thread_idx, size_t i) {
+            const auto& blob = blobs[i];
+            auto [out_ptr, out_size] = dests[i];
             if (mode == 0)
-                zstd_dctx = ZSTD_createDCtx();
-
-            for (size_t i = start; i < end; i++)
+                ZSTD_decompressDCtx(
+                    this->zstd_dcontexts[thread_idx], out_ptr, out_size, blob.data() + 8, blob.size() - 8);
+            else if (mode == 1)
             {
-                const auto& blob = blobs[i];
-                auto [out_ptr, out_size] = dests[i];
-                if (mode == 0)
-                    ZSTD_decompressDCtx(zstd_dctx, out_ptr, out_size, blob.data() + 8, blob.size() - 8);
-                else if (mode == 1)
-                {
-                    LZ4_decompress_safe(
-                        reinterpret_cast<const char*>(blob.data() + 8),
-                        reinterpret_cast<char*>(out_ptr),
-                        blob.size() - 8,
-                        out_size);
-                }
+                LZ4_decompress_safe(
+                    reinterpret_cast<const char*>(blob.data() + 8),
+                    reinterpret_cast<char*>(out_ptr),
+                    blob.size() - 8,
+                    out_size);
             }
-
-            if (zstd_dctx)
-                ZSTD_freeDCtx(zstd_dctx);
         });
     }
+
+protected:
+    void _init_zstd_contexts()
+    {
+        if (this->zstd_dcontexts.size() == 0)
+        {
+            this->zstd_ccontexts.resize(this->pool->num_threads());
+            this->zstd_dcontexts.resize(this->pool->num_threads());
+            for (auto i = 0u; i < this->zstd_ccontexts.size(); i++)
+            {
+                this->zstd_ccontexts[i] = ZSTD_createCCtx();
+                this->zstd_dcontexts[i] = ZSTD_createDCtx();
+            }
+        }
+    }
+
+    std::vector<ZSTD_CCtx*> zstd_ccontexts;
+    std::vector<ZSTD_DCtx*> zstd_dcontexts;
+    std::unique_ptr<thread_pool> pool;
 };
 
 static_assert(std::is_move_constructible_v<iidb>);

@@ -1,4 +1,5 @@
 #include "../iidb.hpp"
+#include <condition_variable>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -21,40 +22,9 @@ public:
         , mode(mode)
     {}
 
-    py_iidb(py_iidb&& other)
-        : iidb(std::move(other))
-        , path(other.path)
-        , readonly(other.readonly)
-        , mode(other.mode)
-    {}
-
-    ~py_iidb()
-    {
-        for (auto ctx : zstd_dcontexts)
-            ZSTD_freeDCtx(ctx);
-        for (auto ctx : zstd_ccontexts)
-            ZSTD_freeCCtx(ctx);
-    }
+    py_iidb(py_iidb&&) = default;
 
 private:
-    void _init_zstd_contexts()
-    {
-        if (this->zstd_dcontexts.size() == 0)
-        {
-            this->zstd_ccontexts.resize(4);
-            this->zstd_ccontexts[0] = ZSTD_createCCtx();
-            this->zstd_ccontexts[1] = ZSTD_createCCtx();
-            this->zstd_ccontexts[2] = ZSTD_createCCtx();
-            this->zstd_ccontexts[3] = ZSTD_createCCtx();
-
-            this->zstd_dcontexts.resize(4);
-            this->zstd_dcontexts[0] = ZSTD_createDCtx();
-            this->zstd_dcontexts[1] = ZSTD_createDCtx();
-            this->zstd_dcontexts[2] = ZSTD_createDCtx();
-            this->zstd_dcontexts[3] = ZSTD_createDCtx();
-        }
-    }
-
     void _set_header(void* bytes, uint16_t height, uint16_t width, uint16_t channels)
     {
         auto header = reinterpret_cast<uint16_t*>(bytes);
@@ -231,23 +201,19 @@ public:
         if (mode == 0)
             this->_init_zstd_contexts();
 
-        parallel_for_(0, blobs.size(), 1, [&](size_t thread_idx, size_t start, size_t end) {
-            ZSTD_DCtx* zstd_dctx = this->zstd_dcontexts[thread_idx];
-
-            for (size_t i = start; i < end; i++)
+        this->pool->parallel_for(0, blobs.size(), [&](size_t i, size_t thread_idx) {
+            const auto& blob = blobs[i];
+            auto this_out_ptr = out_ptr + i * image_nbytes;
+            if (mode == 0)
+                ZSTD_decompressDCtx(
+                    this->zstd_dcontexts[thread_idx], this_out_ptr, image_nbytes, blob.data() + 8, blob.size() - 8);
+            else if (mode == 1)
             {
-                const auto& blob = blobs[i];
-                auto this_out_ptr = out_ptr + i * image_nbytes;
-                if (mode == 0)
-                    ZSTD_decompressDCtx(zstd_dctx, this_out_ptr, image_nbytes, blob.data() + 8, blob.size() - 8);
-                else if (mode == 1)
-                {
-                    LZ4_decompress_safe(
-                        reinterpret_cast<const char*>(blob.data() + 8),
-                        reinterpret_cast<char*>(this_out_ptr),
-                        blob.size() - 8,
-                        image_nbytes);
-                }
+                LZ4_decompress_safe(
+                    reinterpret_cast<const char*>(blob.data() + 8),
+                    reinterpret_cast<char*>(this_out_ptr),
+                    blob.size() - 8,
+                    image_nbytes);
             }
         });
 
@@ -264,47 +230,43 @@ public:
         if (this->mode == 0)
             this->_init_zstd_contexts();
 
-        parallel_for_(0, items.size(), 1, [&](size_t thread_idx, size_t start, size_t end) {
-            for (size_t i = start; i < end; i++)
+        this->pool->parallel_for(0, items.size(), [&](size_t thread_idx, size_t i) {
+            auto& [key, value] = items[i];
+            to_insert_keys[i] = std::to_string(key);
+
+            auto src_nbytes = value.nbytes();
+            auto buffer_info = value.request();
+            auto src_ptr = buffer_info.ptr;
+            uint16_t height = buffer_info.shape[0];
+            uint16_t width = buffer_info.shape[1];
+            uint16_t channels = buffer_info.ndim == 2 ? 1 : buffer_info.shape[2];
+
+            if (this->mode == 0)
             {
-                auto& [key, value] = items[i];
-                to_insert_keys[i] = std::to_string(key);
-                /* to_insert[i].first = */
+                auto compress_bound_size = ZSTD_compressBound(src_nbytes);
+                to_insert_values[i].resize(compress_bound_size + 8);
+                this->_set_header(to_insert_values[i].data(), height, width, channels);
+                auto compressed_nbytes = ZSTD_compressCCtx(
+                    this->zstd_ccontexts[thread_idx],
+                    to_insert_values[i].data() + 8,
+                    compress_bound_size,
+                    src_ptr,
+                    src_nbytes,
+                    7);
+                to_insert_values[i].resize(compressed_nbytes + 8);
+            }
 
-                auto src_nbytes = value.nbytes();
-                auto buffer_info = value.request();
-                auto src_ptr = buffer_info.ptr;
-                uint16_t height = buffer_info.shape[0];
-                uint16_t width = buffer_info.shape[1];
-                uint16_t channels = buffer_info.ndim == 2 ? 1 : buffer_info.shape[2];
-
-                if (this->mode == 0)
-                {
-                    auto compress_bound_size = ZSTD_compressBound(src_nbytes);
-                    to_insert_values[i].resize(compress_bound_size + 8);
-                    this->_set_header(to_insert_values[i].data(), height, width, channels);
-                    auto compressed_nbytes = ZSTD_compressCCtx(
-                        this->zstd_ccontexts[thread_idx],
-                        to_insert_values[i].data() + 8,
-                        compress_bound_size,
-                        src_ptr,
-                        src_nbytes,
-                        7);
-                    to_insert_values[i].resize(compressed_nbytes + 8);
-                }
-
-                else if (this->mode == 1)
-                {
-                    auto compress_bound_size = LZ4_compressBound(src_nbytes);
-                    to_insert_values[i].resize(compress_bound_size + 8);
-                    this->_set_header(to_insert_values[i].data(), height, width, channels);
-                    auto compressed_nbytes = LZ4_compress_default(
-                        reinterpret_cast<const char*>(src_ptr),
-                        reinterpret_cast<char*>(to_insert_values[i].data() + 8),
-                        src_nbytes,
-                        compress_bound_size);
-                    to_insert_values[i].resize(compressed_nbytes + 8);
-                }
+            else if (this->mode == 1)
+            {
+                auto compress_bound_size = LZ4_compressBound(src_nbytes);
+                to_insert_values[i].resize(compress_bound_size + 8);
+                this->_set_header(to_insert_values[i].data(), height, width, channels);
+                auto compressed_nbytes = LZ4_compress_default(
+                    reinterpret_cast<const char*>(src_ptr),
+                    reinterpret_cast<char*>(to_insert_values[i].data() + 8),
+                    src_nbytes,
+                    compress_bound_size);
+                to_insert_values[i].resize(compressed_nbytes + 8);
             }
         });
 
@@ -317,8 +279,6 @@ public:
         txn.commit();
     }
 
-    std::vector<ZSTD_CCtx*> zstd_ccontexts;
-    std::vector<ZSTD_DCtx*> zstd_dcontexts;
     const std::string path;
     const bool readonly;
     const int mode;
