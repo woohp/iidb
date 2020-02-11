@@ -230,7 +230,7 @@ public:
         if (this->mode == 0)
             this->_init_zstd_contexts();
 
-        this->pool->parallel_for(0, items.size(), [&](size_t thread_idx, size_t i) {
+        this->pool->parallel_for(0, items.size(), [&](size_t i, size_t thread_idx) {
             auto& [key, value] = items[i];
             to_insert_keys[i] = std::to_string(key);
 
