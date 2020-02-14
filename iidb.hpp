@@ -461,6 +461,7 @@ protected:
             for (auto i = 0u; i < this->zstd_ccontexts.size(); i++)
             {
                 this->zstd_ccontexts[i] = ZSTD_createCCtx();
+                ZSTD_CCtx_setParameter(this->zstd_ccontexts[i], ZSTD_c_nbWorkers, 4);
                 this->zstd_dcontexts[i] = ZSTD_createDCtx();
             }
         }

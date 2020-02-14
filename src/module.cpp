@@ -230,7 +230,8 @@ public:
         if (this->mode == 0)
             this->_init_zstd_contexts();
 
-        this->pool->parallel_for(0, items.size(), [&](size_t i, size_t thread_idx) {
+        for (size_t i = 0; i < items.size(); i++)
+        {
             auto& [key, value] = items[i];
             to_insert_keys[i] = std::to_string(key);
 
@@ -247,13 +248,14 @@ public:
                 to_insert_values[i].resize(compress_bound_size + 8);
                 this->_set_header(to_insert_values[i].data(), height, width, channels);
                 auto compressed_nbytes = ZSTD_compressCCtx(
-                    this->zstd_ccontexts[thread_idx],
+                    this->zstd_ccontexts[0],
                     to_insert_values[i].data() + 8,
                     compress_bound_size,
                     src_ptr,
                     src_nbytes,
                     7);
                 to_insert_values[i].resize(compressed_nbytes + 8);
+                ZSTD_CCtx_reset(this->zstd_ccontexts[0], ZSTD_reset_session_only);
             }
 
             else if (this->mode == 1)
@@ -268,7 +270,7 @@ public:
                     compress_bound_size);
                 to_insert_values[i].resize(compressed_nbytes + 8);
             }
-        });
+        };
 
         auto txn = this->begin(true);
         for (size_t i = 0; i < items.size(); i++)
@@ -313,6 +315,11 @@ PYBIND11_MODULE(iidb, m)
         "path"_a,
         "readonly"_a = true,
         "mode"_a = 0);
+
+    m.def("__zstd_version__", []() {
+        return std::to_string(ZSTD_VERSION_MAJOR) + '.' + std::to_string(ZSTD_VERSION_MINOR) + '.'
+            + std::to_string(ZSTD_VERSION_RELEASE);
+    });
 
 #ifdef VERSION_INFO
     m.attr("__version__") = VERSION_INFO;
