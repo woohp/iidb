@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import click
 import lmdb
+import tqdm
 
 
 @click.command()
@@ -17,13 +18,27 @@ def main(src: str, dest: str):
     src_env = lmdb.open(src, map_size=1024**4, subdir=False, lock=False, readonly=True)
     dest_env = lmdb.open(dest, map_size=1024**4, subdir=False, lock=False, readonly=False)
 
-    with src_env.begin() as src_txn, dest_env.begin(write=True) as dest_txn:
-        print('src entries:', src_txn.stat()['entries'])
+    with src_env.begin() as src_txn:
+        dest_txn = dest_env.begin(write=True)
+        src_entries = src_txn.stat()['entries']
+        print('src entries:', src_entries)
         print('dest entries (original):', dest_txn.stat()['entries'])
+
+        bar = tqdm.tqdm(total=src_entries, ascii=" 123456789=", smoothing=0)
+        it = 0
         src_cursor = src_txn.cursor()
         while src_cursor.next():
             key, value = src_cursor.item()
             dest_txn.put(key, value)
+            it += 1
+            if it == 100:
+                dest_txn.commit()
+                dest_txn = dest_env.begin(write=True)
+                it = 0
+            bar.update()
+        if it > 0:
+            dest_txn.commit()
+
         print('dest entries (final):', dest_txn.stat()['entries'])
 
 
