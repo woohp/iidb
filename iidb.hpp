@@ -300,6 +300,15 @@ public:
     }
 };
 
+template <auto deleter_func>
+struct deleter
+{
+    void operator()(auto p)
+    {
+        deleter_func(p);
+    }
+};
+
 struct image
 {
     std::vector<std::byte> data;
@@ -326,14 +335,6 @@ public:
     }
 
     iidb(iidb&&) = default;
-
-    ~iidb()
-    {
-        for (auto ctx : zstd_dcontexts)
-            ZSTD_freeDCtx(ctx);
-        for (auto ctx : zstd_ccontexts)
-            ZSTD_freeCCtx(ctx);
-    }
 
     std::optional<image_dim> get_image_dimension(std::string_view key)
     {
@@ -439,7 +440,7 @@ public:
             auto [out_ptr, out_size] = dests[i];
             if (mode == 0)
                 ZSTD_decompressDCtx(
-                    this->zstd_dcontexts[thread_idx], out_ptr, out_size, blob.data() + 8, blob.size() - 8);
+                    this->zstd_dcontexts[thread_idx].get(), out_ptr, out_size, blob.data() + 8, blob.size() - 8);
             else if (mode == 1)
             {
                 LZ4_decompress_safe(
@@ -456,19 +457,20 @@ protected:
     {
         if (this->zstd_dcontexts.size() == 0)
         {
-            this->zstd_ccontexts.resize(this->pool->num_threads());
+            // create compression context
+            this->zstd_ccontexts.resize(1);
+            this->zstd_ccontexts[0].reset(ZSTD_createCCtx());
+            ZSTD_CCtx_setParameter(this->zstd_ccontexts[0].get(), ZSTD_c_nbWorkers, 4);
+
+            // create decompression contexts
             this->zstd_dcontexts.resize(this->pool->num_threads());
-            for (auto i = 0u; i < this->zstd_ccontexts.size(); i++)
-            {
-                this->zstd_ccontexts[i] = ZSTD_createCCtx();
-                ZSTD_CCtx_setParameter(this->zstd_ccontexts[i], ZSTD_c_nbWorkers, 4);
-                this->zstd_dcontexts[i] = ZSTD_createDCtx();
-            }
+            for (auto i = 0u; i < this->pool->num_threads(); i++)
+                this->zstd_dcontexts[i].reset(ZSTD_createDCtx());
         }
     }
 
-    std::vector<ZSTD_CCtx*> zstd_ccontexts;
-    std::vector<ZSTD_DCtx*> zstd_dcontexts;
+    std::vector<std::unique_ptr<ZSTD_CCtx, deleter<ZSTD_freeCCtx>>> zstd_ccontexts;
+    std::vector<std::unique_ptr<ZSTD_DCtx, deleter<ZSTD_freeDCtx>>> zstd_dcontexts;
     std::unique_ptr<thread_pool> pool;
 };
 

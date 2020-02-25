@@ -96,7 +96,8 @@ public:
         if (mode == 0)
         {
             this->_init_zstd_contexts();
-            ZSTD_decompressDCtx(this->zstd_dcontexts[0], out_ptr, out.nbytes(), value->data() + 8, value->size() - 8);
+            ZSTD_decompressDCtx(
+                this->zstd_dcontexts[0].get(), out_ptr, out.nbytes(), value->data() + 8, value->size() - 8);
         }
         else
         {
@@ -128,7 +129,8 @@ public:
             auto temp_buffer = new std::byte[compress_bound_size + 8];
             this->_set_header(temp_buffer, height, width, channels);
             auto compressed_nbytes = ZSTD_compressCCtx(
-                this->zstd_ccontexts[0], temp_buffer + 8, compress_bound_size, src_ptr, src_nbytes, 7);
+                this->zstd_ccontexts[0].get(), temp_buffer + 8, compress_bound_size, src_ptr, src_nbytes, 7);
+            ZSTD_CCtx_reset(this->zstd_ccontexts[0].get(), ZSTD_reset_session_only);
 
             auto txn = this->begin(true);
             blob<std::byte> value_blob { compressed_nbytes + 8, temp_buffer };
@@ -206,7 +208,11 @@ public:
             auto this_out_ptr = out_ptr + i * image_nbytes;
             if (mode == 0)
                 ZSTD_decompressDCtx(
-                    this->zstd_dcontexts[thread_idx], this_out_ptr, image_nbytes, blob.data() + 8, blob.size() - 8);
+                    this->zstd_dcontexts[thread_idx].get(),
+                    this_out_ptr,
+                    image_nbytes,
+                    blob.data() + 8,
+                    blob.size() - 8);
             else if (mode == 1)
             {
                 LZ4_decompress_safe(
@@ -248,14 +254,14 @@ public:
                 to_insert_values[i].resize(compress_bound_size + 8);
                 this->_set_header(to_insert_values[i].data(), height, width, channels);
                 auto compressed_nbytes = ZSTD_compressCCtx(
-                    this->zstd_ccontexts[0],
+                    this->zstd_ccontexts[0].get(),
                     to_insert_values[i].data() + 8,
                     compress_bound_size,
                     src_ptr,
                     src_nbytes,
                     7);
                 to_insert_values[i].resize(compressed_nbytes + 8);
-                ZSTD_CCtx_reset(this->zstd_ccontexts[0], ZSTD_reset_session_only);
+                ZSTD_CCtx_reset(this->zstd_ccontexts[0].get(), ZSTD_reset_session_only);
             }
 
             else if (this->mode == 1)
