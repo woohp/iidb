@@ -119,7 +119,7 @@ public:
     }
 
     template <typename T = std::byte>
-    void put(std::string_view key, blob<T>& value)
+    void put(std::string_view key, blob<T> value)
     {
         MDB_dbi dbi_handle = 0;
         if (::mdb_dbi_open(this->_handle, nullptr, 0, &dbi_handle) != MDB_SUCCESS)
@@ -132,6 +132,12 @@ public:
         auto rc = ::mdb_put(this->_handle, dbi_handle, &key_, &value, 0);
         if (rc != MDB_SUCCESS)
             throw std::runtime_error { "mdb: failed to get value" };
+    }
+
+    template <typename T = std::byte>
+    void put(std::string_view key, std::vector<T>& value)
+    {
+        this->put(key, blob<T> { value.size(), value.data() });
     }
 
     template <typename T = std::byte>
@@ -453,6 +459,49 @@ protected:
             for (auto i = 0u; i < this->pool->num_threads(); i++)
                 this->zstd_dcontexts[i].reset(ZSTD_createDCtx());
         }
+    }
+
+    void _set_header(void* bytes, uint16_t mode, uint16_t height, uint16_t width, uint16_t channels)
+    {
+        auto header = reinterpret_cast<uint16_t*>(bytes);
+        header[0] = mode;
+        header[1] = height;
+        header[2] = width;
+        header[3] = channels;
+    }
+
+    std::vector<std::byte>
+    _compress(uint16_t mode, uint16_t height, uint16_t width, uint16_t channels, const void* data, size_t nbytes)
+    {
+        std::vector<std::byte> buffer;
+
+        if (mode == 0)
+        {
+            this->_init_zstd_contexts();
+            auto compress_bound_size = ZSTD_compressBound(nbytes);
+            buffer.resize(compress_bound_size + 8);
+            this->_set_header(buffer.data(), mode, height, width, channels);
+            auto compressed_nbytes = ZSTD_compressCCtx(
+                this->zstd_ccontexts[0].get(), buffer.data() + 8, compress_bound_size, data, nbytes, 7);
+            buffer.resize(compressed_nbytes + 8);
+            ZSTD_CCtx_reset(this->zstd_ccontexts[0].get(), ZSTD_reset_session_only);
+        }
+
+        else if (mode == 1)
+        {
+            auto compress_bound_size = LZ4_compressBound(nbytes);
+            buffer.resize(compress_bound_size + 8);
+            this->_set_header(buffer.data(), mode, height, width, channels);
+            auto compressed_nbytes = LZ4_compress_HC(
+                reinterpret_cast<const char*>(data),
+                reinterpret_cast<char*>(buffer.data() + 8),
+                nbytes,
+                compress_bound_size,
+                7);
+            buffer.resize(compressed_nbytes + 8);
+        }
+
+        return buffer;
     }
 
     void

@@ -29,16 +29,6 @@ public:
 
     py_iidb(py_iidb&&) = default;
 
-private:
-    void _set_header(void* bytes, uint16_t height, uint16_t width, uint16_t channels)
-    {
-        auto header = reinterpret_cast<uint16_t*>(bytes);
-        header[0] = this->mode;
-        header[1] = height;
-        header[2] = width;
-        header[3] = channels;
-    }
-
 public:
     py_iidb& __enter__()
     {
@@ -117,39 +107,10 @@ public:
         uint16_t width = buffer_info.shape[1];
         uint16_t channels = buffer_info.ndim == 2 ? 1 : buffer_info.shape[2];
 
-        if (this->mode == 0)
-        {
-            this->_init_zstd_contexts();
-            auto compress_bound_size = ZSTD_compressBound(src_nbytes);
-            auto temp_buffer = new std::byte[compress_bound_size + 8];
-            this->_set_header(temp_buffer, height, width, channels);
-            auto compressed_nbytes = ZSTD_compressCCtx(
-                this->zstd_ccontexts[0].get(), temp_buffer + 8, compress_bound_size, src_ptr, src_nbytes, 7);
-            ZSTD_CCtx_reset(this->zstd_ccontexts[0].get(), ZSTD_reset_session_only);
-
-            auto txn = this->begin(true);
-            blob<std::byte> value_blob { compressed_nbytes + 8, temp_buffer };
-            txn.put(key_, value_blob);
-            txn.commit();
-
-            delete temp_buffer;
-        }
-
-        else if (this->mode == 1)
-        {
-            auto compress_bound_size = LZ4_compressBound(src_nbytes);
-            auto temp_buffer = new char[compress_bound_size + 8];
-            this->_set_header(temp_buffer, height, width, channels);
-            auto compressed_nbytes = LZ4_compress_HC(
-                reinterpret_cast<const char*>(src_ptr), temp_buffer + 8, src_nbytes, compress_bound_size, 7);
-
-            auto txn = this->begin(true);
-            blob<std::byte> value_blob { static_cast<size_t>(compressed_nbytes) + 8, temp_buffer };
-            txn.put(key_, value_blob);
-            txn.commit();
-
-            delete temp_buffer;
-        }
+        auto buffer = this->_compress(this->mode, height, width, channels, src_ptr, src_nbytes);
+        auto txn = this->begin(true);
+        txn.put(key_, buffer);
+        txn.commit();
     }
 
     array_type getmulti(const vector<int64_t>& keys)
@@ -229,42 +190,13 @@ public:
             uint16_t height = buffer_info.shape[0];
             uint16_t width = buffer_info.shape[1];
             uint16_t channels = buffer_info.ndim == 2 ? 1 : buffer_info.shape[2];
-
-            if (this->mode == 0)
-            {
-                auto compress_bound_size = ZSTD_compressBound(src_nbytes);
-                to_insert_values[i].resize(compress_bound_size + 8);
-                this->_set_header(to_insert_values[i].data(), height, width, channels);
-                auto compressed_nbytes = ZSTD_compressCCtx(
-                    this->zstd_ccontexts[0].get(),
-                    to_insert_values[i].data() + 8,
-                    compress_bound_size,
-                    src_ptr,
-                    src_nbytes,
-                    7);
-                to_insert_values[i].resize(compressed_nbytes + 8);
-                ZSTD_CCtx_reset(this->zstd_ccontexts[0].get(), ZSTD_reset_session_only);
-            }
-
-            else if (this->mode == 1)
-            {
-                auto compress_bound_size = LZ4_compressBound(src_nbytes);
-                to_insert_values[i].resize(compress_bound_size + 8);
-                this->_set_header(to_insert_values[i].data(), height, width, channels);
-                auto compressed_nbytes = LZ4_compress_default(
-                    reinterpret_cast<const char*>(src_ptr),
-                    reinterpret_cast<char*>(to_insert_values[i].data() + 8),
-                    src_nbytes,
-                    compress_bound_size);
-                to_insert_values[i].resize(compressed_nbytes + 8);
-            }
+            to_insert_values[i] = this->_compress(this->mode, height, width, channels, src_ptr, src_nbytes);
         };
 
         auto txn = this->begin(true);
         for (size_t i = 0; i < items.size(); i++)
         {
-            blob<std::byte> value_blob { to_insert_values[i].size(), to_insert_values[i].data() };
-            txn.put(to_insert_keys[i], value_blob);
+            txn.put(to_insert_keys[i], to_insert_values[i]);
         }
         txn.commit();
     }
