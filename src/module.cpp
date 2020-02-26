@@ -96,22 +96,12 @@ public:
             out.resize({ height, width });
         else
             out.resize({ height, width, channels });
-        auto out_ptr = reinterpret_cast<char*>(out.request().ptr);
+        auto out_ptr = reinterpret_cast<std::byte*>(out.request().ptr);
 
         if (mode == 0)
-        {
             this->_init_zstd_contexts();
-            ZSTD_decompressDCtx(
-                this->zstd_dcontexts[0].get(), out_ptr, out.nbytes(), value->data() + 8, value->size() - 8);
-        }
-        else
-        {
-            LZ4_decompress_safe(
-                reinterpret_cast<const char*>(value->data() + 8),
-                reinterpret_cast<char*>(out_ptr),
-                value->size() - 8,
-                out.nbytes());
-        }
+
+        this->_decompress(mode, out_ptr, out.nbytes(), value->data(), value->size(), 0);
 
         return out;
     }
@@ -211,21 +201,8 @@ public:
         this->pool->parallel_for(0, blobs.size(), [&](size_t i, size_t thread_idx) {
             const auto& blob = blobs[i];
             auto this_out_ptr = out_ptr + i * image_nbytes;
-            if (mode == 0)
-                ZSTD_decompressDCtx(
-                    this->zstd_dcontexts[thread_idx].get(),
-                    this_out_ptr,
-                    image_nbytes,
-                    blob.data() + 8,
-                    blob.size() - 8);
-            else if (mode == 1)
-            {
-                LZ4_decompress_safe(
-                    reinterpret_cast<const char*>(blob.data() + 8),
-                    reinterpret_cast<char*>(this_out_ptr),
-                    blob.size() - 8,
-                    image_nbytes);
-            }
+
+            this->_decompress(mode, this_out_ptr, image_nbytes, blob.data(), blob.size(), thread_idx);
         });
 
         return out;
