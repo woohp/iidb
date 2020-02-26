@@ -135,7 +135,7 @@ public:
     }
 
     template <typename T = std::byte>
-    std::optional<blob<T>> get(std::int64_t key)
+    std::optional<blob<T>> get(int64_t key)
     {
         return this->get(std::to_string(key));
     }
@@ -350,7 +350,7 @@ public:
         return image_dim { height, width, channels };
     }
 
-    std::optional<image_dim> get_image_dimension(std::int64_t key)
+    std::optional<image_dim> get_image_dimension(int64_t key)
     {
         auto key_ = std::to_string(key);
         return this->get_image_dimension(key_);
@@ -389,14 +389,13 @@ public:
         return image { std::move(uncompressed), height, width, channels };
     }
 
-    std::optional<image> get(std::int64_t key, std::byte* const out = nullptr)
+    std::optional<image> get(int64_t key, std::byte* const out = nullptr)
     {
         auto key_ = std::to_string(key);
         return this->get(key_, out);
     }
 
-    void getmulti(
-        const std::vector<std::int64_t>& keys, std::byte* out, std::optional<std::size_t> chunk_size = std::nullopt)
+    void getmulti(const std::vector<int64_t>& keys, std::byte* out, std::optional<std::size_t> stride = std::nullopt)
     {
         std::vector<blob<std::byte>> blobs(keys.size());
         std::vector<image_dim> image_dims(keys.size());
@@ -426,7 +425,7 @@ public:
         for (size_t i = 0; i < keys.size(); i++)
         {
             const auto& dim = image_dims[i];
-            std::size_t total_size = chunk_size.value_or(dim.width * dim.height * dim.channels);  // in bytes
+            std::size_t total_size = stride.value_or(dim.width * dim.height * dim.channels);  // in bytes
             dests.emplace_back(out, total_size);
             out += total_size;
         }

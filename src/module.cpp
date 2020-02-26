@@ -9,13 +9,18 @@
 #include <variant>
 namespace py = pybind11;
 using namespace iidb;
+using std::pair;
+using std::string;
+using std::string_view;
+using std::tuple;
+using std::vector;
 
 typedef py::array_t<uint8_t, py::array::c_style | py::array::forcecast> array_type;
 
 class py_iidb : public iidb
 {
 public:
-    py_iidb(std::string_view path, bool readonly, int mode)
+    py_iidb(string_view path, bool readonly, int mode)
         : iidb(path, !readonly)
         , path(path)
         , readonly(readonly)
@@ -45,7 +50,7 @@ public:
         this->close();
     }
 
-    bool contains(std::int64_t key)
+    bool contains(int64_t key)
     {
         auto txn = this->begin();
         auto key_ = std::to_string(key);
@@ -53,7 +58,7 @@ public:
         return static_cast<bool>(value);
     }
 
-    std::variant<std::pair<int, int>, std::tuple<int, int, int>> get_image_dimension(std::int64_t key)
+    std::variant<pair<int, int>, tuple<int, int, int>> get_image_dimension(int64_t key)
     {
         auto key_ = std::to_string(key);
         auto txn = this->begin();
@@ -61,18 +66,18 @@ public:
         if (!value)
             throw std::out_of_range { "key not found: " + key_ };
 
-        const std::uint16_t* header = reinterpret_cast<const uint16_t*>(value->data());
+        const uint16_t* header = reinterpret_cast<const uint16_t*>(value->data());
         int height = header[1];
         int width = header[2];
         int channels = header[3];
 
         if (channels == 1)
-            return std::pair(height, width);
+            return pair(height, width);
         else
-            return std::tuple(height, width, channels);
+            return tuple { height, width, channels };
     }
 
-    array_type get(std::int64_t key)
+    array_type get(int64_t key)
     {
         auto txn = this->begin();
         auto key_ = std::to_string(key);
@@ -80,7 +85,7 @@ public:
         if (!value)
             throw std::out_of_range { "key not found: " + key_ };
 
-        const std::uint16_t* header = reinterpret_cast<const uint16_t*>(value->data());
+        const uint16_t* header = reinterpret_cast<const uint16_t*>(value->data());
         int mode = header[0];
         int height = header[1];
         int width = header[2];
@@ -111,7 +116,7 @@ public:
         return out;
     }
 
-    void put(std::int64_t key, array_type value)
+    void put(int64_t key, array_type value)
     {
         auto key_ = std::to_string(key);
 
@@ -157,12 +162,12 @@ public:
         }
     }
 
-    array_type getmulti(const std::vector<std::int64_t>& keys)
+    array_type getmulti(const vector<int64_t>& keys)
     {
-        std::vector<blob<std::byte>> blobs(keys.size());
-        std::vector<image_dim> image_dims(keys.size());
+        vector<blob<std::byte>> blobs(keys.size());
+        vector<image_dim> image_dims(keys.size());
 
-        std::uint16_t mode = 0;
+        uint16_t mode = 0;
 
         auto txn = this->begin();
         for (size_t i = 0; i < keys.size(); i++)
@@ -226,13 +231,13 @@ public:
         return out;
     }
 
-    void putmulti(const std::vector<std::pair<std::int64_t, array_type>>& items)
+    void putmulti(const vector<pair<int64_t, array_type>>& items)
     {
         if (items.size() == 0)
             return;
 
-        std::vector<std::string> to_insert_keys(items.size());
-        std::vector<std::vector<std::byte>> to_insert_values(items.size());
+        vector<string> to_insert_keys(items.size());
+        vector<vector<std::byte>> to_insert_values(items.size());
         if (this->mode == 0)
             this->_init_zstd_contexts();
 
@@ -287,7 +292,7 @@ public:
         txn.commit();
     }
 
-    const std::string path;
+    const string path;
     const bool readonly;
     const int mode;
 };
@@ -299,7 +304,7 @@ PYBIND11_MODULE(iidb, m)
     using namespace pybind11::literals;
 
     py::class_<py_iidb>(m, "IIDB")
-        .def(py::init<std::string_view, bool, int>(), "", "path"_a, "readonly"_a = true, "mode"_a = 0)
+        .def(py::init<string_view, bool, int>(), "", "path"_a, "readonly"_a = true, "mode"_a = 0)
         .def_property_readonly("closed", &py_iidb::closed, "")
         .def("close", &py_iidb::close, "")
         .def("__enter__", &py_iidb::__enter__, "")
@@ -311,12 +316,12 @@ PYBIND11_MODULE(iidb, m)
         .def("__getitem__", &py_iidb::get, "", "key"_a)
         .def("put", &py_iidb::put, "", "key"_a, "value"_a)
         .def("__setitem__", &py_iidb::put, "", "key"_a, "value"_a)
-        .def("getmulti", (array_type(py_iidb::*)(const std::vector<std::int64_t>& keys)) & py_iidb::getmulti)
+        .def("getmulti", (array_type(py_iidb::*)(const vector<int64_t>& keys)) & py_iidb::getmulti)
         .def("putmulti", &py_iidb::putmulti, "", "items"_a);
 
     m.def(
         "open",
-        [](std::string_view path, bool readonly, int mode) { return py_iidb(path, readonly, mode); },
+        [](string_view path, bool readonly, int mode) { return py_iidb(path, readonly, mode); },
         "",
         "path"_a,
         "readonly"_a = true,
