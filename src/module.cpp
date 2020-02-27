@@ -16,6 +16,18 @@ using std::tuple;
 using std::vector;
 
 typedef py::array_t<uint8_t, py::array::c_style | py::array::forcecast> array_type;
+typedef std::variant<int64_t, string_view> generic_key_type;
+
+string preprocess_key(const generic_key_type& key)
+{
+    return std::visit([](auto&& arg) {
+        using T = std::decay_t<decltype(arg)>;
+        if constexpr (std::is_same_v<T, int64_t>)
+            return std::to_string(arg);
+        else  // string_view
+            return std::string { arg };
+    }, key);
+}
 
 class py_iidb : public iidb
 {
@@ -67,13 +79,12 @@ public:
             return tuple { height, width, channels };
     }
 
-    array_type get(int64_t key)
+    array_type get(string_view key)
     {
         auto txn = this->begin();
-        auto key_ = std::to_string(key);
-        auto value = txn.get(key_);
+        auto value = txn.get(key);
         if (!value)
-            throw std::out_of_range { "key not found: " + key_ };
+            throw std::out_of_range { "key not found: " + std::string(key) };
 
         const uint16_t* header = reinterpret_cast<const uint16_t*>(value->data());
         int mode = header[0];
@@ -96,10 +107,13 @@ public:
         return out;
     }
 
-    void put(int64_t key, array_type value)
+    array_type get(int64_t key)
     {
-        auto key_ = std::to_string(key);
+        return this->get(std::to_string(key));
+    }
 
+    void put(string_view key, array_type value)
+    {
         auto src_nbytes = value.nbytes();
         auto buffer_info = value.request();
         auto src_ptr = buffer_info.ptr;
@@ -109,11 +123,16 @@ public:
 
         auto buffer = this->_compress(this->mode, height, width, channels, src_ptr, src_nbytes);
         auto txn = this->begin(true);
-        txn.put(key_, buffer);
+        txn.put(key, buffer);
         txn.commit();
     }
 
-    array_type getmulti(const vector<int64_t>& keys)
+    void put(int64_t key, array_type value)
+    {
+        this->put(std::to_string(key), value);
+    }
+
+    array_type getmulti(const vector<generic_key_type>& keys)
     {
         vector<blob<std::byte>> blobs(keys.size());
         vector<image_dim> image_dims(keys.size());
@@ -123,11 +142,11 @@ public:
         auto txn = this->begin();
         for (size_t i = 0; i < keys.size(); i++)
         {
-            auto key = keys[i];
-            auto key_ = std::to_string(key);
-            auto value = txn.get(key_);
+            auto key = preprocess_key(keys[i]);
+
+            auto value = txn.get(key);
             if (!value)
-                throw std::out_of_range { "key not found: " + key_ };
+                throw std::out_of_range { "key not found: " + key };
             blobs[i] = *value;
 
             auto header = reinterpret_cast<const uint16_t*>(value->data());
@@ -169,7 +188,7 @@ public:
         return out;
     }
 
-    void putmulti(const vector<pair<int64_t, array_type>>& items)
+    void putmulti(const vector<pair<generic_key_type, array_type>>& items)
     {
         if (items.size() == 0)
             return;
@@ -182,7 +201,7 @@ public:
         for (size_t i = 0; i < items.size(); i++)
         {
             auto& [key, value] = items[i];
-            to_insert_keys[i] = std::to_string(key);
+            to_insert_keys[i] = preprocess_key(key);
 
             auto src_nbytes = value.nbytes();
             auto buffer_info = value.request();
@@ -221,11 +240,13 @@ PYBIND11_MODULE(iidb, m)
         .def("__contains__", &py_iidb::contains, "", "key"_a)
         .def("__len__", &py_iidb::size, "")
         .def("get_image_dimension", &py_iidb::get_image_dimension, "", "key"_a)
-        .def("get", &py_iidb::get, "", "key"_a)
-        .def("__getitem__", &py_iidb::get, "", "key"_a)
-        .def("put", &py_iidb::put, "", "key"_a, "value"_a)
-        .def("__setitem__", &py_iidb::put, "", "key"_a, "value"_a)
-        .def("getmulti", (array_type(py_iidb::*)(const vector<int64_t>& keys)) & py_iidb::getmulti)
+        .def("get", py::overload_cast<string_view>(&py_iidb::get), "", "key"_a)
+        .def("get", py::overload_cast<int64_t>(&py_iidb::get), "", "key"_a)
+        .def("__getitem__", py::overload_cast<std::string_view>(&py_iidb::get), "", "key"_a)
+        .def("__getitem__", py::overload_cast<int64_t>(&py_iidb::get), "", "key"_a)
+        .def("__setitem__", py::overload_cast<string_view, array_type>(&py_iidb::put), "", "key"_a, "value"_a)
+        .def("__setitem__", py::overload_cast<int64_t, array_type>(&py_iidb::put), "", "key"_a, "value"_a)
+        .def("getmulti", py::overload_cast<const vector<generic_key_type>&>(&py_iidb::getmulti), "", "keys"_a)
         .def("putmulti", &py_iidb::putmulti, "", "items"_a);
 
     m.def(

@@ -19,7 +19,7 @@ class IIDBTestCase(unittest.TestCase):
     def test_basic_put_and_get(self):
         db = iidb.open('test.mdb', readonly=False)
         data = self._make_array()
-        db.put(123, data)
+        db[123] = data
         self.assertTrue(123 in db)
         self.assertFalse(234 in db)
         self.assertFalse(db.closed)
@@ -27,12 +27,12 @@ class IIDBTestCase(unittest.TestCase):
         self.assertTrue(db.closed)
 
         db2 = iidb.open('test.mdb', readonly=True)
-        np.testing.assert_array_equal(db2.get(123), data)
+        np.testing.assert_array_equal(db2[123], data)
 
     def test_basic_put_and_get_lz4(self):
         db = iidb.open('test.mdb', readonly=False, mode=1)
         data = self._make_array()
-        db.put(123, data)
+        db[123] = data
         self.assertTrue(123 in db)
         self.assertFalse(234 in db)
         self.assertFalse(db.closed)
@@ -40,16 +40,16 @@ class IIDBTestCase(unittest.TestCase):
         self.assertTrue(db.closed)
 
         db2 = iidb.open('test.mdb', readonly=True)
-        np.testing.assert_array_equal(db2.get(123), data)
+        np.testing.assert_array_equal(db2[123], data)
 
     def test_channels(self):
         db = iidb.open('test.mdb', readonly=False)
         data = self._make_array((5, 5, 3))
-        db.put(234, data)
+        db[234] = data
         db.close()
 
         db2 = iidb.open('test.mdb', readonly=True)
-        np.testing.assert_array_equal(db2.get(234), data)
+        np.testing.assert_array_equal(db2[234], data)
 
     def test_put_multiple(self):
         data = [
@@ -61,18 +61,8 @@ class IIDBTestCase(unittest.TestCase):
         db.close()
 
         db2 = iidb.open('test.mdb', readonly=False)
-        np.testing.assert_array_equal(db2.get(1), data[0][1])
-        np.testing.assert_array_equal(db2.get(2), data[1][1])
-
-    def test_getitem_and_setitem(self):
-        db = iidb.open('test.mdb', readonly=False)
-        data = self._make_array()
-        db[123] = data
-        np.testing.assert_array_equal(db.get(123), data)
-
-        data = self._make_array()
-        db.put(234, data)
-        np.testing.assert_array_equal(db.get(234), data)
+        np.testing.assert_array_equal(db2[1], data[0][1])
+        np.testing.assert_array_equal(db2[2], data[1][1])
 
     def test_get_dimension(self):
         db = iidb.open('test.mdb', readonly=False)
