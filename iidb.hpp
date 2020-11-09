@@ -137,7 +137,7 @@ public:
     template <typename T = std::byte>
     void put(std::string_view key, std::vector<T>& value)
     {
-        this->put(key, blob<T> { value.size(), value.data() });
+        this->put(key, blob<T> { { value.size(), value.data() } });
     }
 
     template <typename T = std::byte>
@@ -168,7 +168,9 @@ public:
 
     constexpr lmdb(lmdb&& other)
     {
-        std::swap(this->_handle, other._handle);
+        auto temp = this->_handle;
+        this->_handle = other._handle;
+        other._handle = temp;
     }
 
     ~lmdb()
@@ -309,7 +311,8 @@ public:
 template <auto deleter_func>
 struct deleter
 {
-    void operator()(auto p)
+    template <typename PointerType>
+    void operator()(PointerType p)
     {
         deleter_func(p);
     }

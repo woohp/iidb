@@ -8,7 +8,6 @@
 #include <tuple>
 #include <variant>
 namespace py = pybind11;
-using namespace iidb;
 using std::pair;
 using std::string;
 using std::string_view;
@@ -20,24 +19,26 @@ typedef std::variant<int64_t, string_view> generic_key_type;
 
 string preprocess_key(const generic_key_type& key)
 {
-    return std::visit([](auto&& arg) {
-        using T = std::decay_t<decltype(arg)>;
-        if constexpr (std::is_same_v<T, int64_t>)
-            return std::to_string(arg);
-        else  // string_view
-            return std::string { arg };
-    }, key);
+    return std::visit(
+        [](auto&& arg) {
+            using T = std::decay_t<decltype(arg)>;
+            if constexpr (std::is_same_v<T, int64_t>)
+                return std::to_string(arg);
+            else  // string_view
+                return std::string { arg };
+        },
+        key);
 }
 
-class py_iidb : public iidb
+class py_iidb : public ::iidb::iidb
 {
 public:
     py_iidb(string_view path, bool readonly, int mode)
-        : iidb(path, !readonly)
+        : ::iidb::iidb(path, !readonly)
         , path(path)
         , readonly(readonly)
         , mode(mode)
-    {}
+    { }
 
     py_iidb(py_iidb&&) = default;
 
@@ -134,8 +135,8 @@ public:
 
     array_type getmulti(const vector<generic_key_type>& keys)
     {
-        vector<blob<std::byte>> blobs(keys.size());
-        vector<image_dim> image_dims(keys.size());
+        vector<::iidb::blob<std::byte>> blobs(keys.size());
+        vector<::iidb::image_dim> image_dims(keys.size());
 
         uint16_t mode = 0;
 
