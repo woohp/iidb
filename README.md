@@ -1,3 +1,8 @@
+## IIDB
+
+IIDB is a key-value database designed for storing images, with a heavy focus on speed. IIDB is a lightweight wrapper around LMDB and encodes data using zstd or lz4.
+
+
 ## Usage
 ```python
 import iidb
