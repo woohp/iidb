@@ -14,6 +14,9 @@ using std::string_view;
 using std::tuple;
 using std::vector;
 
+#define STRINGIFY(x) #x
+#define MACRO_STRINGIFY(x) STRINGIFY(x)
+
 typedef py::array_t<uint8_t, py::array::c_style | py::array::forcecast> array_type;
 typedef std::variant<int64_t, string_view> generic_key_type;
 
@@ -264,6 +267,6 @@ PYBIND11_MODULE(iidb, m)
     });
 
 #ifdef VERSION_INFO
-    m.attr("__version__") = VERSION_INFO;
+    m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
 #endif
 }
